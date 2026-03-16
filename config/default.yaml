@@ -1,0 +1,57 @@
+# XDR Simulator Configuration
+# Banque Centrale de Djibouti — SI Bancaire PCI-DSS
+
+simulation:
+  events_per_day: 12000
+  attack_probability: 0.12
+  inject_attack_scenario: true
+
+generators:
+  syslog:
+    weight: 40
+    attack_probability: 0.15
+  filebeat:
+    weight: 35
+    attack_probability: 0.12
+  json_api:
+    weight: 25
+    attack_probability: 0.10
+
+detection:
+  ssh_brute_force:
+    threshold: 5
+    time_window_seconds: 300
+  abnormal_access:
+    time_window_seconds: 600
+    business_hours: [7, 19]  # EAT (UTC+3)
+  privilege_escalation:
+    time_window_seconds: 1800
+
+correlation:
+  rules:
+    - id: COR-001
+      name: SSH Brute Force
+      threshold: 5
+      window: 300
+    - id: COR-002
+      name: Cross-Source Abnormal Access
+      threshold: 3
+      window: 600
+    - id: COR-003
+      name: Privilege Escalation Chain
+      threshold: 2
+      window: 1800
+    - id: COR-004
+      name: Multi-Source Attack Chain
+      threshold: 4
+      window: 3600
+
+compliance:
+  standard: PCI-DSS v4.0
+  log_retention_days: 365
+  audit_trail_retention_days: 90
+
+output:
+  data_dir: data
+  log_dir: logs
+  report_format: json
