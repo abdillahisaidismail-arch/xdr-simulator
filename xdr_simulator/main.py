@@ -227,13 +227,32 @@ Examples:
 
     args = arg_parser.parse_args()
 
-    results = run_simulation(
-        events_per_day=args.events,
-        attack_probability=args.attack_prob,
-        output_dir=args.output,
-        log_dir=args.log_dir,
-        verbose=not args.quiet,
-    )
+    # Validate arguments with friendly error messages
+    if args.events <= 0:
+        arg_parser.error("--events must be a positive integer (got %d)" % args.events)
+    if not 0.0 <= args.attack_prob <= 1.0:
+        arg_parser.error(
+            "--attack-prob must be between 0.0 and 1.0 (got %s)" % args.attack_prob
+        )
+
+    try:
+        results = run_simulation(
+            events_per_day=args.events,
+            attack_probability=args.attack_prob,
+            output_dir=args.output,
+            log_dir=args.log_dir,
+            verbose=not args.quiet,
+        )
+    except PermissionError as exc:
+        print(f"\n[ERROR] Permission denied while writing outputs: {exc}", file=sys.stderr)
+        print("        Try a different --output / --log-dir or fix folder permissions.", file=sys.stderr)
+        sys.exit(2)
+    except KeyboardInterrupt:
+        print("\n[ABORT] Simulation interrupted by user.", file=sys.stderr)
+        sys.exit(130)
+    except Exception as exc:  # noqa: BLE001 — top-level safety net
+        print(f"\n[ERROR] Simulation failed: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     sys.exit(0 if results["incidents"] >= 0 else 1)
 

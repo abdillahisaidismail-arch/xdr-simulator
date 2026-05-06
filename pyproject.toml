@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "xdr-simulator"
@@ -37,6 +37,10 @@ dev = [
 
 [project.scripts]
 xdr-simulator = "xdr_simulator.main:main"
+
+[tool.setuptools.packages.find]
+include = ["xdr_simulator*"]
+exclude = ["tests*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
