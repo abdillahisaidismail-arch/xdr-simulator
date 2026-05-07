@@ -4,50 +4,144 @@ XDR Simulator — Flask API
 Exposes simulation data for the SOC HUD.
 
 Routes:
-  GET /                 → serves the SOC HUD
-  GET /api/progress     → real-time pipeline state (progress.json)
-  GET /api/report       → final simulation report (xdr_report.json)
-  GET /api/incidents    → individual IR-*.json reports
-  GET /api/status       → health check
+  GET  /                 → serves the SOC HUD (single-page dashboard)
+  GET  /api/status       → health check
+  GET  /api/progress     → real-time pipeline state (progress.json)
+  GET  /api/report       → final simulation report (xdr_report.json)
+  GET  /api/incidents    → individual IR-*.json reports
+  GET  /api/history      → list of past simulation runs (history.json)
+  POST /api/run          → trigger a new simulation run (async, in a subprocess)
+  GET  /api/run/status   → current run subprocess status
 
 Usage:
   python api.py
   then open http://localhost:5000 in your browser
 """
 
+from __future__ import annotations
+
 import json
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, send_file
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
-app = Flask(__name__)
-CORS(app)
+# ---------------------------------------------------------------------------
+# Resolve project paths regardless of the working directory used to launch the
+# server. This was the root cause of the "blank page" issue: send_file() with a
+# relative path silently fails when api.py is launched from another folder.
+# ---------------------------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_DIR = PROJECT_ROOT / "data"
+DASHBOARD_DIR = PROJECT_ROOT / "xdr_simulator" / "dashboard"
+HUD_FILE = "hud.html"
+HISTORY_PATH = DATA_DIR / "history.json"
 
-DATA_DIR = Path("data")
-HUD_PATH = Path("xdr_simulator/dashboard/hud.html")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+app = Flask(__name__, static_folder=str(DASHBOARD_DIR), static_url_path="/static")
+# Permissive CORS for local development — the HUD can be opened directly via
+# file:// or from another origin while still talking to the API.
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 
+# ---------------------------------------------------------------------------
+# Run state (in-memory) for /api/run
+# ---------------------------------------------------------------------------
+_run_lock = threading.Lock()
+_run_state: dict = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "returncode": None,
+    "events": None,
+    "attack_prob": None,
+    "stdout_tail": "",
+    "stderr_tail": "",
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _no_cache(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
+@app.after_request
+def add_no_cache_headers(response):
+    # JSON endpoints should never be cached — the HUD polls every ~1.5s.
+    if request.path.startswith("/api/"):
+        return _no_cache(response)
+    return response
+
+
+def _read_json(path: Path, fallback):
+    if not path.exists():
+        return fallback
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return fallback
+
+
+def _append_history(entry: dict) -> None:
+    history = _read_json(HISTORY_PATH, [])
+    if not isinstance(history, list):
+        history = []
+    history.append(entry)
+    # Keep the most recent 50 runs.
+    history = history[-50:]
+    with open(HISTORY_PATH, "w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Static routes
+# ---------------------------------------------------------------------------
 @app.route("/")
 def index():
-    """Serve the SOC HUD."""
-    return send_file(HUD_PATH)
+    """Serve the SOC HUD single-page dashboard."""
+    return send_from_directory(DASHBOARD_DIR, HUD_FILE)
 
 
+@app.route("/favicon.ico")
+def favicon():
+    # Avoid 404 noise in the console.
+    return ("", 204)
+
+
+# ---------------------------------------------------------------------------
+# API routes
+# ---------------------------------------------------------------------------
 @app.route("/api/status")
 def status():
-    """Health check."""
-    return jsonify({"status": "ok", "data_dir": str(DATA_DIR.resolve())})
+    return jsonify(
+        {
+            "status": "ok",
+            "service": "xdr-simulator",
+            "version": "1.0.0",
+            "data_dir": str(DATA_DIR),
+            "project_root": str(PROJECT_ROOT),
+            "server_time": datetime.now(timezone.utc).isoformat(),
+        }
+    )
 
 
 @app.route("/api/progress")
 def get_progress():
-    """Return current pipeline phase written by _write_progress()."""
-    path = DATA_DIR / "progress.json"
-    if not path.exists():
-        return jsonify({"phase": 0, "status": "idle"})
-    with open(path, encoding="utf-8") as f:
-        return jsonify(json.load(f))
+    """Return the current pipeline phase as written by _write_progress()."""
+    data = _read_json(DATA_DIR / "progress.json", {"phase": 0, "status": "idle"})
+    return jsonify(data)
 
 
 @app.route("/api/report")
@@ -55,9 +149,16 @@ def get_report():
     """Return the final XDR report generated by DashboardReporter."""
     path = DATA_DIR / "xdr_report.json"
     if not path.exists():
-        return jsonify({"error": "No report yet. Run: python -m xdr_simulator"}), 404
-    with open(path, encoding="utf-8") as f:
-        return jsonify(json.load(f))
+        return (
+            jsonify(
+                {
+                    "error": "No report yet. Run a simulation from the HUD or use: "
+                    "python -m xdr_simulator --events 5000 --attack-prob 0.25"
+                }
+            ),
+            404,
+        )
+    return jsonify(_read_json(path, {}))
 
 
 @app.route("/api/incidents")
@@ -65,16 +166,166 @@ def get_incidents():
     """Return all individual incident reports (IR-*.json)."""
     incidents = []
     for ir_file in sorted(DATA_DIR.glob("IR-*.json")):
-        with open(ir_file, encoding="utf-8") as f:
-            incidents.append(json.load(f))
+        data = _read_json(ir_file, None)
+        if data is not None:
+            incidents.append(data)
     return jsonify(incidents)
 
 
-if __name__ == "__main__":
+@app.route("/api/history")
+def get_history():
+    """Return the list of past simulation runs."""
+    history = _read_json(HISTORY_PATH, [])
+    if not isinstance(history, list):
+        history = []
+    # Most recent first.
+    return jsonify(list(reversed(history)))
+
+
+@app.route("/api/run/status")
+def run_status():
+    with _run_lock:
+        return jsonify(dict(_run_state))
+
+
+@app.route("/api/run", methods=["POST", "OPTIONS"])
+def run_simulation_endpoint():
+    """
+    Trigger a new simulation in a background subprocess so the HUD stays
+    responsive. JSON body: {"events": 5000, "attack_prob": 0.25}
+    """
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        events = int(payload.get("events", 5000))
+        attack_prob = float(payload.get("attack_prob", 0.25))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid 'events' or 'attack_prob' value."}), 400
+
+    if events <= 0 or events > 200000:
+        return jsonify({"error": "events must be between 1 and 200000"}), 400
+    if not 0.0 <= attack_prob <= 1.0:
+        return jsonify({"error": "attack_prob must be between 0.0 and 1.0"}), 400
+
+    with _run_lock:
+        if _run_state["running"]:
+            return (
+                jsonify(
+                    {
+                        "error": "A simulation is already running.",
+                        "started_at": _run_state["started_at"],
+                    }
+                ),
+                409,
+            )
+        _run_state.update(
+            {
+                "running": True,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": None,
+                "returncode": None,
+                "events": events,
+                "attack_prob": attack_prob,
+                "stdout_tail": "",
+                "stderr_tail": "",
+            }
+        )
+
+    def _worker():
+        cmd = [
+            sys.executable,
+            "-m",
+            "xdr_simulator",
+            "--events",
+            str(events),
+            "--attack-prob",
+            str(attack_prob),
+            "--output",
+            str(DATA_DIR),
+            "--quiet",
+        ]
+        start = time.time()
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=900,
+            )
+            stdout_tail = (proc.stdout or "")[-2000:]
+            stderr_tail = (proc.stderr or "")[-2000:]
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            stdout_tail = ""
+            stderr_tail = "Simulation timed out after 15 minutes."
+            rc = -1
+        except Exception as exc:  # noqa: BLE001
+            stdout_tail = ""
+            stderr_tail = f"Failed to launch simulation: {exc}"
+            rc = -1
+
+        # Build a history entry from the final report (if any).
+        report = _read_json(DATA_DIR / "xdr_report.json", {})
+        summary = report.get("summary", {}) if isinstance(report, dict) else {}
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "events_requested": events,
+            "attack_prob": attack_prob,
+            "duration_seconds": round(time.time() - start, 2),
+            "returncode": rc,
+            "total_events": summary.get("total_events"),
+            "total_incidents": summary.get("total_incidents"),
+            "total_correlations": summary.get("total_correlations"),
+            "status": "ok" if rc == 0 else "error",
+        }
+        try:
+            _append_history(entry)
+        except OSError:
+            pass
+
+        with _run_lock:
+            _run_state.update(
+                {
+                    "running": False,
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "returncode": rc,
+                    "stdout_tail": stdout_tail,
+                    "stderr_tail": stderr_tail,
+                }
+            )
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+    return jsonify(
+        {
+            "started": True,
+            "events": events,
+            "attack_prob": attack_prob,
+            "message": "Simulation launched. Poll /api/progress for live updates.",
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+def _banner() -> None:
     print("\n  XDR Simulator — API Server")
-    print("  → HUD:  http://localhost:5000")
-    print("  → http://localhost:5000/api/status")
-    print("  → http://localhost:5000/api/progress")
-    print("  → http://localhost:5000/api/report")
-    print("  → http://localhost:5000/api/incidents\n")
-    app.run(debug=True, port=5000)
+    print(f"  → Project root: {PROJECT_ROOT}")
+    print(f"  → Data dir:     {DATA_DIR}")
+    print("  → HUD:          http://localhost:5000")
+    print("  → Status:       http://localhost:5000/api/status")
+    print("  → Progress:     http://localhost:5000/api/progress")
+    print("  → Report:       http://localhost:5000/api/report")
+    print("  → History:      http://localhost:5000/api/history")
+    print("  → Run (POST):   http://localhost:5000/api/run\n")
+
+
+if __name__ == "__main__":
+    _banner()
+    # debug=False avoids the double-process reloader (which would spawn two
+    # subprocess workers when /api/run is called).
+    app.run(host="127.0.0.1", port=5000, debug=False, use_reloader=False)

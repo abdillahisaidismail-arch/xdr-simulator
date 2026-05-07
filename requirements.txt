@@ -1,0 +1,13 @@
+# XDR Simulator — Runtime dependencies
+# Python >= 3.11
+
+# Core: configuration parsing for detection rules and PCI-DSS templates
+PyYAML>=6.0,<7.0
+
+# REST API + SOC HUD server
+Flask>=3.0,<4.0
+flask-cors>=4.0,<6.0
+
+# Optional but recommended: production WSGI server (used if you ever want to
+# replace `python api.py` with `gunicorn -w 2 api:app`)
+# gunicorn>=21.0
