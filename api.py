@@ -4,26 +4,34 @@ XDR Simulator — Flask API
 Exposes simulation data for the SOC HUD.
 
 Routes:
-  GET /api/progress   → real-time pipeline state (progress.json)
-  GET /api/report     → final simulation report (xdr_report.json)
-  GET /api/incidents  → individual IR-*.json reports
-  GET /api/status     → health check
+  GET /                 → serves the SOC HUD
+  GET /api/progress     → real-time pipeline state (progress.json)
+  GET /api/report       → final simulation report (xdr_report.json)
+  GET /api/incidents    → individual IR-*.json reports
+  GET /api/status       → health check
 
 Usage:
   python api.py
-  # then open xdr_simulator/dashboard/hud.html
+  then open http://localhost:5000 in your browser
 """
 
 import json
 from pathlib import Path
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_file
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)  # Allow HUD (opened as local file) to call the API
+CORS(app)
 
 DATA_DIR = Path("data")
+HUD_PATH = Path("xdr_simulator/dashboard/hud.html")
+
+
+@app.route("/")
+def index():
+    """Serve the SOC HUD."""
+    return send_file(HUD_PATH)
 
 
 @app.route("/api/status")
@@ -64,9 +72,9 @@ def get_incidents():
 
 if __name__ == "__main__":
     print("\n  XDR Simulator — API Server")
+    print("  → HUD:  http://localhost:5000")
     print("  → http://localhost:5000/api/status")
     print("  → http://localhost:5000/api/progress")
     print("  → http://localhost:5000/api/report")
-    print("  → http://localhost:5000/api/incidents")
-    print("  Open xdr_simulator/dashboard/hud.html in your browser\n")
+    print("  → http://localhost:5000/api/incidents\n")
     app.run(debug=True, port=5000)
