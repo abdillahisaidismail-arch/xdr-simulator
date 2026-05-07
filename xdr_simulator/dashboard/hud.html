@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>XDR Simulator — SOC HUD</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg:#080c10;--surface:#0d1117;--surface-2:#111820;--surface-3:#162030;
+  --border:rgba(0,255,180,0.12);--border-bright:rgba(0,255,180,0.30);
+  --text:#c9d8e8;--text-muted:#5a7a95;--text-faint:#2a4055;
+  --green:#00ffb4;--green-dim:rgba(0,255,180,0.15);--green-glow:0 0 12px rgba(0,255,180,0.4);
+  --red:#ff4560;--red-dim:rgba(255,69,96,0.15);
+  --orange:#ffa040;--orange-dim:rgba(255,160,64,0.15);
+  --yellow:#ffd060;--yellow-dim:rgba(255,208,96,0.12);
+  --blue:#4090ff;--blue-dim:rgba(64,144,255,0.15);--purple:#9b6dff;
+  --font-mono:'JetBrains Mono',monospace;--font-body:'Inter',sans-serif;
+  --radius-sm:4px;--radius-md:6px;--radius-lg:10px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+body{min-height:100dvh;font-family:var(--font-body);font-size:0.85rem;color:var(--text);background:var(--bg);overflow-x:hidden;}
+
+.hud-header{position:sticky;top:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:0.75rem 1.5rem;background:rgba(8,12,16,0.95);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);}
+.logo{display:flex;align-items:center;gap:0.75rem;font-family:var(--font-mono);font-size:0.95rem;font-weight:700;color:var(--green);text-shadow:var(--green-glow);letter-spacing:0.05em;}
+.logo-sub{font-size:0.7rem;color:var(--text-muted);font-weight:400;display:block;}
+.header-right{display:flex;align-items:center;gap:1.5rem;font-family:var(--font-mono);font-size:0.72rem;color:var(--text-muted);}
+.live-dot{display:inline-flex;align-items:center;gap:0.4rem;font-weight:600;}
+.live-dot::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:var(--green-glow);animation:pulse 1.8s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:0.4;transform:scale(0.7);}}
+.status-pill{padding:3px 0.75rem;border-radius:var(--radius-sm);background:var(--green-dim);border:1px solid rgba(0,255,180,0.3);color:var(--green);font-size:0.7rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;transition:all 300ms;}
+.status-pill.error{background:var(--red-dim);border-color:rgba(255,69,96,0.4);color:var(--red);}
+.status-pill.waiting{background:var(--yellow-dim);border-color:rgba(255,208,96,0.35);color:var(--yellow);}
+
+.hud-main{padding:1rem 1.5rem;display:flex;flex-direction:column;gap:1rem;}
+
+.kpi-row{display:grid;grid-template-columns:repeat(6,1fr);gap:0.75rem;}
+.kpi-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:1rem;position:relative;overflow:hidden;}
+.kpi-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--accent,var(--green));box-shadow:0 0 8px var(--accent,var(--green));}
+.kpi-label{font-size:0.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;font-weight:500;margin-bottom:0.3rem;}
+.kpi-value{font-family:var(--font-mono);font-size:1.6rem;font-weight:700;color:var(--accent,var(--green));text-shadow:0 0 20px var(--accent,var(--green));line-height:1;margin-bottom:0.2rem;transition:all 400ms ease;}
+.kpi-sub{font-size:0.68rem;color:var(--text-muted);font-family:var(--font-mono);}
+
+.main-grid{display:grid;grid-template-columns:1fr 1fr 320px;gap:1rem;}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;}
+.panel-header{display:flex;align-items:center;justify-content:space-between;padding:0.6rem 1rem;border-bottom:1px solid var(--border);background:rgba(0,0,0,0.2);}
+.panel-title{font-family:var(--font-mono);font-size:0.7rem;font-weight:700;color:var(--green);text-transform:uppercase;letter-spacing:0.1em;}
+.panel-badge{padding:1px 0.5rem;background:var(--surface-3);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:0.68rem;color:var(--text-muted);font-family:var(--font-mono);}
+
+.chart-wrap{position:relative;height:200px;padding:1rem;}
+
+.feed-wrap{height:230px;overflow-y:auto;padding:0.5rem 1rem;scrollbar-width:thin;scrollbar-color:var(--border) transparent;}
+.feed-item{display:grid;grid-template-columns:65px 72px 1fr 90px;gap:0.5rem;align-items:center;padding:0.35rem 0.5rem;border-radius:var(--radius-sm);margin-bottom:2px;font-family:var(--font-mono);font-size:0.68rem;border:1px solid transparent;animation:slideIn 0.3s ease;cursor:pointer;transition:background 150ms;}
+.feed-item:hover{background:var(--surface-2);}
+.feed-item.critical{border-color:rgba(255,69,96,0.2);background:rgba(255,69,96,0.04);}
+.feed-item.high{border-color:rgba(255,160,64,0.15);}
+@keyframes slideIn{from{opacity:0;transform:translateX(-6px);}to{opacity:1;transform:none;}}
+.feed-time{color:var(--text-muted);}
+.sev-badge{display:inline-block;padding:1px 5px;border-radius:3px;font-size:0.62rem;font-weight:700;text-transform:uppercase;text-align:center;}
+.sev-badge.critical,.sev-critical{background:var(--red-dim);color:var(--red);border:1px solid rgba(255,69,96,0.3);}
+.sev-badge.high,.sev-high{background:var(--orange-dim);color:var(--orange);border:1px solid rgba(255,160,64,0.3);}
+.sev-badge.medium,.sev-medium{background:var(--yellow-dim);color:var(--yellow);border:1px solid rgba(255,208,96,0.25);}
+.sev-badge.low,.sev-low{background:var(--blue-dim);color:var(--blue);border:1px solid rgba(64,144,255,0.3);}
+.feed-type{color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.feed-ip{color:var(--text-muted);text-align:right;font-size:0.62rem;}
+
+.mitre-list{display:flex;flex-direction:column;gap:0.75rem;padding:1rem;}
+.mitre-row{display:flex;align-items:center;gap:0.75rem;}
+.mitre-id{font-family:var(--font-mono);font-size:0.7rem;color:var(--purple);font-weight:700;width:56px;flex-shrink:0;}
+.mitre-name{font-size:0.7rem;color:var(--text);flex:1;}
+.mitre-bar-wrap{width:80px;height:4px;background:var(--surface-3);border-radius:2px;overflow:hidden;flex-shrink:0;}
+.mitre-bar{height:100%;border-radius:2px;background:var(--purple);box-shadow:0 0 6px rgba(155,109,255,0.5);transition:width 0.8s ease;width:0%;}
+.mitre-count{font-family:var(--font-mono);font-size:0.68rem;color:var(--text-muted);width:24px;text-align:right;}
+
+.bottom-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;}
+
+.pipeline-steps{display:flex;flex-direction:column;gap:0.5rem;padding:1rem;}
+.pipeline-step{display:flex;align-items:center;gap:0.75rem;padding:0.4rem 0.75rem;background:var(--surface-2);border-radius:var(--radius-sm);border:1px solid var(--border);transition:border-color 300ms;}
+.pipeline-step.active{border-color:rgba(0,255,180,0.35);}
+.step-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:var(--text-faint);transition:all 400ms;}
+.step-dot.ok{background:var(--green);box-shadow:var(--green-glow);}
+.step-dot.running{background:var(--yellow);box-shadow:0 0 8px rgba(255,208,96,0.6);animation:pulse 0.8s ease-in-out infinite;}
+.step-name{font-family:var(--font-mono);font-size:0.68rem;color:var(--text);flex:1;}
+.step-stat{font-family:var(--font-mono);font-size:0.68rem;color:var(--green);}
+
+.source-list{display:flex;flex-direction:column;gap:0.75rem;padding:1rem;}
+.source-row{display:flex;align-items:center;gap:0.75rem;}
+.source-label{font-family:var(--font-mono);font-size:0.68rem;color:var(--text-muted);width:64px;flex-shrink:0;}
+.source-bar-wrap{flex:1;height:6px;background:var(--surface-3);border-radius:3px;overflow:hidden;}
+.source-bar{height:100%;border-radius:3px;width:0%;transition:width 0.8s ease;}
+.src-syslog{background:var(--green);}
+.src-filebeat{background:var(--blue);}
+.src-api{background:var(--orange);}
+.source-pct{font-family:var(--font-mono);font-size:0.68rem;color:var(--text-muted);width:36px;text-align:right;}
+.donut-wrap{height:100px;position:relative;margin-top:0.5rem;}
+
+.compliance-grid{display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;padding:1rem;}
+.comp-item{padding:0.75rem;background:var(--surface-2);border-radius:var(--radius-sm);border:1px solid var(--border);text-align:center;}
+.comp-req{font-family:var(--font-mono);font-size:0.68rem;color:var(--text-muted);margin-bottom:0.2rem;}
+.comp-status{font-family:var(--font-mono);font-size:0.85rem;font-weight:700;color:var(--green);text-shadow:var(--green-glow);}
+
+.control-bar{display:flex;align-items:center;gap:1rem;padding:0.75rem 1.5rem;background:var(--surface);border-top:1px solid var(--border);position:sticky;bottom:0;}
+.btn{display:inline-flex;align-items:center;gap:0.4rem;padding:0.4rem 1rem;border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;cursor:pointer;transition:all 180ms;border:none;}
+.btn-primary{background:var(--green-dim);color:var(--green);border:1px solid rgba(0,255,180,0.35);}
+.btn-primary:hover{background:rgba(0,255,180,0.25);box-shadow:var(--green-glow);}
+.btn-ghost{background:transparent;color:var(--text-muted);border:1px solid var(--border);}
+.btn-ghost:hover{background:var(--surface-2);color:var(--text);}
+.sep{flex:1;}
+.api-info{font-family:var(--font-mono);font-size:0.68rem;color:var(--text-faint);}
+#last-update{font-family:var(--font-mono);font-size:0.68rem;color:var(--text-muted);}
+
+.no-data{color:var(--text-faint);font-family:var(--font-mono);font-size:0.72rem;text-align:center;padding:2rem;line-height:2;}
+
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);z-index:200;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity 200ms;}
+.modal-overlay.open{opacity:1;pointer-events:all;}
+.modal{background:var(--surface);border:1px solid var(--border-bright);border-radius:var(--radius-lg);padding:1.5rem;width:520px;max-width:90vw;}
+.modal-title{font-family:var(--font-mono);font-size:0.9rem;color:var(--green);font-weight:700;margin-bottom:1rem;}
+.modal-field{display:grid;grid-template-columns:130px 1fr;gap:0.5rem;padding:0.35rem 0;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:0.72rem;}
+.modal-key{color:var(--text-muted);}
+.modal-val{color:var(--text);word-break:break-all;}
+.modal-val.critical{color:var(--red);font-weight:700;}
+.modal-val.high{color:var(--orange);font-weight:700;}
+.modal-val.mitre{color:var(--purple);}
+
+@media(max-width:1200px){.kpi-row{grid-template-columns:repeat(3,1fr);}.main-grid{grid-template-columns:1fr 1fr;}.main-grid>:last-child{grid-column:1/-1;}.bottom-grid{grid-template-columns:1fr 1fr;}}
+</style>
+</head>
+<body>
+
+<header class="hud-header">
+  <div class="logo">
+    <svg width="26" height="26" viewBox="0 0 28 28" fill="none">
+      <polygon points="14,2 26,8 26,20 14,26 2,20 2,8" stroke="#00ffb4" stroke-width="1.5" fill="none" opacity="0.6"/>
+      <circle cx="14" cy="14" r="3" fill="#00ffb4"/>
+      <line x1="14" y1="6" x2="14" y2="11" stroke="#00ffb4" stroke-width="1"/>
+      <line x1="14" y1="17" x2="14" y2="22" stroke="#00ffb4" stroke-width="1"/>
+    </svg>
+    <div>XDR-SIMULATOR <span class="logo-sub">Banking SOC · PCI-DSS · Real-Time Data</span></div>
+  </div>
+  <div class="header-right">
+    <span class="live-dot" id="live-label">LIVE</span>
+    <span id="clock">--:--:--</span>
+    <span id="header-status" class="status-pill waiting">CONNECTING...</span>
+  </div>
+</header>
+
+<main class="hud-main">
+  <section class="kpi-row">
+    <div class="kpi-card" style="--accent:var(--green)">
+      <div class="kpi-label">Total Events</div>
+      <div class="kpi-value" id="kpi-events">—</div>
+      <div class="kpi-sub" id="kpi-events-sub">awaiting data</div>
+    </div>
+    <div class="kpi-card" style="--accent:var(--red)">
+      <div class="kpi-label">Incidents</div>
+      <div class="kpi-value" id="kpi-incidents">—</div>
+      <div class="kpi-sub" id="kpi-incidents-sub">—</div>
+    </div>
+    <div class="kpi-card" style="--accent:var(--orange)">
+      <div class="kpi-label">Critical</div>
+      <div class="kpi-value" id="kpi-critical">—</div>
+      <div class="kpi-sub" id="kpi-critical-sub">—</div>
+    </div>
+    <div class="kpi-card" style="--accent:var(--blue)">
+      <div class="kpi-label">Correlations</div>
+      <div class="kpi-value" id="kpi-correlations">—</div>
+      <div class="kpi-sub">multi-source matches</div>
+    </div>
+    <div class="kpi-card" style="--accent:var(--green)">
+      <div class="kpi-label">Parse Rate</div>
+      <div class="kpi-value" id="kpi-parse">—</div>
+      <div class="kpi-sub" id="kpi-parse-sub">—</div>
+    </div>
+    <div class="kpi-card" style="--accent:var(--purple)">
+      <div class="kpi-label">MITRE Tactics</div>
+      <div class="kpi-value" id="kpi-mitre">3</div>
+      <div class="kpi-sub">T1110 · T1078 · T1548</div>
+    </div>
+  </section>
+
+  <div class="main-grid">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Events by Severity</span>
+        <span class="panel-badge" id="chart-total">0 events</span>
+      </div>
+      <div class="chart-wrap"><canvas id="sev-chart"></canvas></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Incident Feed</span>
+        <span class="panel-badge" id="feed-badge">0 incidents</span>
+      </div>
+      <div class="feed-wrap" id="feed">
+        <div class="no-data">Start Flask API then run:<br><span style="color:var(--green)">python api.py</span><br><span style="color:var(--green)">python -m xdr_simulator</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">MITRE ATT&amp;CK</span>
+        <span class="panel-badge">3 techniques</span>
+      </div>
+      <div class="mitre-list">
+        <div class="mitre-row">
+          <span class="mitre-id">T1110</span>
+          <span class="mitre-name">Brute Force</span>
+          <div class="mitre-bar-wrap"><div class="mitre-bar" id="bar-t1110"></div></div>
+          <span class="mitre-count" id="cnt-t1110">0</span>
+        </div>
+        <div class="mitre-row">
+          <span class="mitre-id">T1078</span>
+          <span class="mitre-name">Valid Accounts</span>
+          <div class="mitre-bar-wrap"><div class="mitre-bar" id="bar-t1078"></div></div>
+          <span class="mitre-count" id="cnt-t1078">0</span>
+        </div>
+        <div class="mitre-row">
+          <span class="mitre-id">T1548</span>
+          <span class="mitre-name">Priv. Escalation</span>
+          <div class="mitre-bar-wrap"><div class="mitre-bar" id="bar-t1548"></div></div>
+          <span class="mitre-count" id="cnt-t1548">0</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="bottom-grid">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Pipeline Health</span>
+        <span class="panel-badge" id="pipe-badge">idle</span>
+      </div>
+      <div class="pipeline-steps">
+        <div class="pipeline-step" id="step-1"><div class="step-dot" id="dot-1"></div><span class="step-name">1 · Generators</span><span class="step-stat" id="stat-1">—</span></div>
+        <div class="pipeline-step" id="step-2"><div class="step-dot" id="dot-2"></div><span class="step-name">2 · Parser &amp; Normaliser</span><span class="step-stat" id="stat-2">—</span></div>
+        <div class="pipeline-step" id="step-3"><div class="step-dot" id="dot-3"></div><span class="step-name">3 · Correlation Engine</span><span class="step-stat" id="stat-3">—</span></div>
+        <div class="pipeline-step" id="step-4"><div class="step-dot" id="dot-4"></div><span class="step-name">4 · Detection (3 rules)</span><span class="step-stat" id="stat-4">—</span></div>
+        <div class="pipeline-step" id="step-5"><div class="step-dot" id="dot-5"></div><span class="step-name">5 · PCI-DSS Reporting</span><span class="step-stat" id="stat-5">—</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Log Sources</span>
+        <span class="panel-badge">3 feeds</span>
+      </div>
+      <div class="source-list">
+        <div class="source-row">
+          <span class="source-label">Syslog</span>
+          <div class="source-bar-wrap"><div class="source-bar src-syslog" id="bar-syslog"></div></div>
+          <span class="source-pct" id="pct-syslog">—</span>
+        </div>
+        <div class="source-row">
+          <span class="source-label">Filebeat</span>
+          <div class="source-bar-wrap"><div class="source-bar src-filebeat" id="bar-filebeat"></div></div>
+          <span class="source-pct" id="pct-filebeat">—</span>
+        </div>
+        <div class="source-row">
+          <span class="source-label">JSON API</span>
+          <div class="source-bar-wrap"><div class="source-bar src-api" id="bar-api"></div></div>
+          <span class="source-pct" id="pct-api">—</span>
+        </div>
+        <div class="donut-wrap"><canvas id="inc-donut"></canvas></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">PCI-DSS v4.0</span>
+        <span class="panel-badge" id="pci-badge">pending</span>
+      </div>
+      <div class="compliance-grid">
+        <div class="comp-item"><div class="comp-req">Req. 10</div><div class="comp-status">PASS</div><div style="font-size:.65rem;color:var(--text-muted);margin-top:2px">Audit Trail</div></div>
+        <div class="comp-item"><div class="comp-req">Req. 6</div><div class="comp-status">PASS</div><div style="font-size:.65rem;color:var(--text-muted);margin-top:2px">Detection Rules</div></div>
+        <div class="comp-item"><div class="comp-req">Req. 8</div><div class="comp-status">PASS</div><div style="font-size:.65rem;color:var(--text-muted);margin-top:2px">Access Control</div></div>
+        <div class="comp-item"><div class="comp-req">Log Rotation</div><div class="comp-status">90d ✓</div><div style="font-size:.65rem;color:var(--text-muted);margin-top:2px">Retention</div></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div class="control-bar">
+  <button class="btn btn-primary" onclick="pollProgress()">↺ Refresh Now</button>
+  <button class="btn btn-ghost" id="btn-auto" onclick="toggleAuto()">⏸ Auto OFF</button>
+  <span class="sep"></span>
+  <span class="api-info">API → <span style="color:var(--green)">localhost:5000</span></span>
+  <span id="last-update">Never updated</span>
+</div>
+
+<div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-title" id="modal-title">Incident Report</div>
+    <div id="modal-body" style="display:flex;flex-direction:column;gap:0;margin-bottom:1rem;"></div>
+    <button class="btn btn-ghost" onclick="closeModal()">Close</button>
+  </div>
+</div>
+
+<script>
+const API_PROGRESS = 'http://localhost:5000/api/progress';
+const API_REPORT   = 'http://localhost:5000/api/report';
+const MITRE_MAP    = { ssh_brute_force:'T1110', abnormal_access:'T1078', privilege_escalation:'T1548' };
+
+let autoTimer = null;
+let autoOn    = false;
+
+// Clock
+function tick() {
+  document.getElementById('clock').textContent =
+    new Date().toISOString().replace('T',' ').substring(0,19)+' UTC';
+}
+setInterval(tick, 1000); tick();
+
+// Charts
+const sevChart = new Chart(
+  document.getElementById('sev-chart').getContext('2d'),
+  { type:'bar',
+    data:{ labels:['Critical','High','Medium','Low','Info'],
+           datasets:[{ data:[0,0,0,0,0],
+             backgroundColor:['rgba(255,69,96,.7)','rgba(255,160,64,.7)','rgba(255,208,96,.6)','rgba(64,144,255,.6)','rgba(90,122,149,.5)'],
+             borderColor:['#ff4560','#ffa040','#ffd060','#4090ff','#5a7a95'],
+             borderWidth:1, borderRadius:3 }] },
+    options:{ responsive:true, maintainAspectRatio:false, animation:{duration:500},
+      plugins:{legend:{display:false}},
+      scales:{ x:{ticks:{color:'#5a7a95',font:{family:'JetBrains Mono',size:10}},grid:{color:'rgba(0,255,180,.04)'}},
+               y:{ticks:{color:'#5a7a95',font:{family:'JetBrains Mono',size:9}},grid:{color:'rgba(0,255,180,.06)'}} } } }
+);
+
+const donutChart = new Chart(
+  document.getElementById('inc-donut').getContext('2d'),
+  { type:'doughnut',
+    data:{ labels:['Critical','High','Medium','Low'],
+           datasets:[{ data:[0,0,0,0],
+             backgroundColor:['rgba(255,69,96,.8)','rgba(255,160,64,.8)','rgba(255,208,96,.7)','rgba(64,144,255,.7)'],
+             borderColor:['#ff4560','#ffa040','#ffd060','#4090ff'], borderWidth:1 }] },
+    options:{ responsive:true, maintainAspectRatio:false, cutout:'65%',
+      plugins:{ legend:{ position:'right', labels:{color:'#5a7a95',font:{family:'JetBrains Mono',size:9},boxWidth:8,padding:4} } } } }
+);
+
+// Helpers
+function fmt(n) { return n == null ? '—' : n >= 1000 ? (n/1000).toFixed(1)+'k' : String(n); }
+function pct(a,b) { return b > 0 ? Math.round(a/b*100)+'%' : '0%'; }
+function ts() { return new Date().toTimeString().substring(0,8); }
+
+function setKpi(id, val, sub) {
+  const el = document.getElementById(id); if (el) el.textContent = val;
+  const se = document.getElementById(id+'-sub'); if (se && sub != null) se.textContent = sub;
+}
+function setStatus(text, type) {
+  const el = document.getElementById('header-status');
+  el.textContent = text;
+  el.className = 'status-pill' + (type==='error' ? ' error' : type==='waiting' ? ' waiting' : '');
+}
+
+// Pipeline
+function renderPipeline(phase, d) {
+  for (let i = 1; i <= 5; i++) {
+    const dot  = document.getElementById('dot-'+i);
+    const stat = document.getElementById('stat-'+i);
+    const step = document.getElementById('step-'+i);
+    if (!dot) continue;
+    if (i < phase) {
+      dot.className = 'step-dot ok'; stat.textContent = '✓';
+      step.classList.remove('active');
+    } else if (i === phase) {
+      dot.className = 'step-dot running'; stat.textContent = '● running…';
+      step.classList.add('active');
+    } else {
+      dot.className = 'step-dot'; stat.textContent = '—';
+      step.classList.remove('active');
+    }
+  }
+  if (d.total_events) document.getElementById('stat-1').textContent = fmt(d.total_events)+' events';
+  if (d.parsed_events) document.getElementById('stat-2').textContent = fmt(d.parsed_events)+' parsed';
+  if (d.correlations != null) document.getElementById('stat-3').textContent = fmt(d.correlations)+' corr.';
+  if (d.incidents != null) document.getElementById('stat-4').textContent = fmt(d.incidents)+' incidents';
+  if (phase >= 5) document.getElementById('stat-5').textContent = 'audit trail ✓';
+  document.getElementById('pipe-badge').textContent = phase >= 5 ? 'complete ✓' : 'phase '+phase+'/5';
+}
+
+// Incidents
+function renderFeed(list) {
+  document.getElementById('feed-badge').textContent = list.length+' incidents';
+  const feed = document.getElementById('feed');
+  if (!list.length) {
+    feed.innerHTML = '<div class="no-data">No incidents detected<br>Try higher --attack-prob</div>';
+    return;
+  }
+  feed.innerHTML = '';
+  [...list].reverse().slice(0,50).forEach(inc => {
+    const sev   = inc.severity || 'low';
+    const type  = (inc.incident_type||'').replace(/_/g,' ');
+    const mitre = MITRE_MAP[inc.incident_type] || inc.mitre_technique || '—';
+    const ip    = inc.source_ip || '—';
+    const div   = document.createElement('div');
+    div.className = 'feed-item '+sev;
+    div.innerHTML =
+      `<span class="feed-time">${ts()}</span>`+
+      `<span class="sev-badge ${sev}">${sev.toUpperCase()}</span>`+
+      `<span class="feed-type">${type} · ${mitre}</span>`+
+      `<span class="feed-ip">${ip}</span>`;
+    div.addEventListener('click', () => openModal(inc));
+    feed.appendChild(div);
+  });
+}
+
+function renderMitre(list) {
+  const c = { T1110:0, T1078:0, T1548:0 };
+  list.forEach(i => { const t = MITRE_MAP[i.incident_type]||i.mitre_technique; if (t && c[t]!=null) c[t]++; });
+  const mx = Math.max(1, ...Object.values(c));
+  [['T1110','t1110'],['T1078','t1078'],['T1548','t1548']].forEach(([k,id]) => {
+    const bar = document.getElementById('bar-'+id);
+    const cnt = document.getElementById('cnt-'+id);
+    if (bar) bar.style.width = (c[k]/mx*100)+'%';
+    if (cnt) cnt.textContent = c[k];
+  });
+}
+
+function renderSources(bySrc, total) {
+  const map = { syslog:'syslog', filebeat:'filebeat', json_api:'api', api:'api' };
+  const acc = { syslog:0, filebeat:0, api:0 };
+  Object.entries(bySrc).forEach(([k,v]) => { if (map[k]) acc[map[k]] += v; });
+  ['syslog','filebeat','api'].forEach(name => {
+    const p = total > 0 ? Math.round(acc[name]/total*100) : 0;
+    const bar = document.getElementById('bar-'+name);
+    const pctEl = document.getElementById('pct-'+name);
+    if (bar) bar.style.width = p+'%';
+    if (pctEl) pctEl.textContent = p+'%';
+  });
+}
+
+// Main poll
+async function pollProgress() {
+  try {
+    const res = await fetch(API_PROGRESS, { cache:'no-store' });
+    if (!res.ok) throw new Error(res.status);
+    const d = await res.json();
+    const phase = d.phase || 0;
+
+    setStatus(phase === 0 ? 'IDLE' : phase >= 5 ? 'COMPLETE' : 'LIVE — Phase '+phase,
+              phase >= 5 ? '' : 'waiting');
+    renderPipeline(phase, d);
+
+    if (d.total_events)  setKpi('kpi-events',      fmt(d.total_events),  d.total_events+' raw events');
+    if (d.parsed_events) setKpi('kpi-parse',        pct(d.parsed_events, d.total_events), d.parsed_events+' parsed');
+    if (d.correlations != null) setKpi('kpi-correlations', fmt(d.correlations), 'multi-source');
+    if (d.incidents != null)    setKpi('kpi-incidents',    fmt(d.incidents), d.incidents+' total');
+
+    const list = d.incident_list || [];
+    if (list.length) {
+      renderFeed(list);
+      renderMitre(list);
+      const crit = list.filter(i => i.severity==='critical').length;
+      setKpi('kpi-critical', String(crit), pct(crit, list.length)+' of incidents');
+    }
+
+    if (d.severity_distribution) {
+      const sd = d.severity_distribution;
+      donutChart.data.datasets[0].data = [sd.critical||0, sd.high||0, sd.medium||0, sd.low||0];
+      donutChart.update();
+    }
+
+    // When complete, fetch full report for severity chart + sources
+    if (phase >= 5) await fetchReport();
+
+    document.getElementById('last-update').textContent = 'Updated: '+ts();
+  } catch(e) {
+    setStatus('API OFFLINE', 'error');
+    document.getElementById('last-update').textContent = 'Error — run: python api.py';
+  }
+}
+
+async function fetchReport() {
+  try {
+    const res = await fetch(API_REPORT, { cache:'no-store' });
+    if (!res.ok) return;
+    const r = await res.json();
+    const s = r.summary || {};
+    setKpi('kpi-events',       fmt(s.total_events),      s.total_events+' raw events');
+    setKpi('kpi-incidents',    fmt(s.total_incidents),    s.total_incidents+' total');
+    setKpi('kpi-correlations', fmt(s.total_correlations), 'multi-source');
+
+    const bySev = r.events_by_severity || {};
+    sevChart.data.datasets[0].data = [
+      bySev.critical||0, bySev.high||0, bySev.medium||0, bySev.low||0, bySev.info||0
+    ];
+    sevChart.update();
+    document.getElementById('chart-total').textContent = fmt(s.total_events)+' events';
+
+    if (r.events_by_source) renderSources(r.events_by_source, s.total_events || 1);
+
+    const incList = r.incidents || [];
+    if (incList.length) {
+      renderFeed(incList);
+      renderMitre(incList);
+      const crit = incList.filter(i => i.severity==='critical').length;
+      setKpi('kpi-critical', String(crit), pct(crit, incList.length)+' of incidents');
+      const sd = { critical:0, high:0, medium:0, low:0 };
+      incList.forEach(i => { if (sd[i.severity]!=null) sd[i.severity]++; });
+      donutChart.data.datasets[0].data = [sd.critical, sd.high, sd.medium, sd.low];
+      donutChart.update();
+    }
+
+    document.getElementById('pci-badge').textContent = s.total_incidents > 0 ? 'compliant' : 'pending';
+    setStatus('COMPLETE', '');
+  } catch(e) { /* report not ready yet */ }
+}
+
+// Modal
+function openModal(inc) {
+  document.getElementById('modal-title').textContent =
+    'Incident — '+(inc.incident_id||'').substring(0,8).toUpperCase();
+  const sev = inc.severity || '';
+  const fields = [
+    ['type',           (inc.incident_type||'—').replace(/_/g,' ')],
+    ['severity',       (inc.severity||'—').toUpperCase(), sev],
+    ['mitre',          (MITRE_MAP[inc.incident_type]||inc.mitre_technique||'—'), 'mitre'],
+    ['source_ip',      inc.source_ip||'—'],
+    ['target',         inc.target||'—'],
+    ['event_count',    inc.event_count||'—'],
+    ['description',    (inc.description||'—').substring(0,120)+'…'],
+    ['recommended',    inc.recommended_action||'Review and escalate'],
+    ['pci_dss',        'Req. 10 — Audit entry created'],
+  ];
+  document.getElementById('modal-body').innerHTML =
+    fields.map(([k,v,cls='']) =>
+      `<div class="modal-field"><span class="modal-key">${k}</span><span class="modal-val ${cls}">${v}</span></div>`
+    ).join('');
+  document.getElementById('modal').classList.add('open');
+}
+function closeModal() { document.getElementById('modal').classList.remove('open'); }
+
+// Auto-refresh
+function toggleAuto() {
+  autoOn = !autoOn;
+  const btn = document.getElementById('btn-auto');
+  if (autoOn) {
+    btn.textContent = '⏸ Auto ON (2s)';
+    btn.style.color = 'var(--green)';
+    autoTimer = setInterval(pollProgress, 2000);
+  } else {
+    btn.textContent = '⏸ Auto OFF';
+    btn.style.color = '';
+    clearInterval(autoTimer);
+  }
+}
+
+// Keyboard
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModal();
+  if (e.key === 'r') pollProgress();
+  if (e.key === 'a') toggleAuto();
+});
+
+// Init
+pollProgress();
+</script>
+</body>
+</html>
