@@ -26,6 +26,19 @@ from .dashboard import DashboardReporter
 from .utils.logger import get_logger
 
 
+def _write_progress(output_dir: str, phase: int, data: dict) -> None:
+    """Écrit l'état courant du pipeline pour le HUD en temps réel."""
+    progress = {
+        "phase": phase,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        **data,
+    }
+    path = Path(output_dir) / "progress.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(progress, f, indent=2)
+
+
 def run_simulation(
     events_per_day: int = 12000,
     attack_probability: float = 0.12,
@@ -69,6 +82,12 @@ def run_simulation(
     print(f"      ✓ Generated {len(raw_events):,} events in {gen_time:.2f}s")
     print(f"        Sources: Syslog + Filebeat + JSON API")
 
+    _write_progress(output_dir, 1, {
+        "total_events": len(raw_events),
+        "gen_time": round(gen_time, 2),
+        "status": "generating",
+    })
+
     # ---------------------------------------------------------------
     # Phase 2: Parsing & Normalization
     # ---------------------------------------------------------------
@@ -80,6 +99,13 @@ def run_simulation(
     stats = parser.get_stats()
     print(f"      ✓ Parsed {stats['parsed_count']:,} events in {parse_time:.2f}s")
     print(f"        Success rate: {stats['success_rate']}")
+
+    _write_progress(output_dir, 2, {
+        "total_events": len(raw_events),
+        "parsed_events": stats["parsed_count"],
+        "parse_rate": stats["success_rate"],
+        "status": "parsing",
+    })
 
     # ---------------------------------------------------------------
     # Phase 3: Multi-Source Correlation
@@ -95,6 +121,14 @@ def run_simulation(
 
     multi_source = sum(1 for c in correlations if c.get("multi_source"))
     print(f"        Multi-source correlations: {multi_source}")
+
+    _write_progress(output_dir, 3, {
+        "total_events": len(raw_events),
+        "parsed_events": stats["parsed_count"],
+        "correlations": len(correlations),
+        "multi_source": multi_source,
+        "status": "correlating",
+    })
 
     # ---------------------------------------------------------------
     # Phase 4: Automated Detection
@@ -119,6 +153,26 @@ def run_simulation(
             f"{inc.incident_type.value} — {inc.source_ip}"
         )
 
+    # _write_progress HORS de la boucle for
+    _write_progress(output_dir, 4, {
+        "total_events": len(raw_events),
+        "parsed_events": stats["parsed_count"],
+        "correlations": len(correlations),
+        "incidents": len(incidents),
+        "severity_distribution": det_stats.get("by_severity", {}),
+        "incident_list": [
+            {
+                "incident_type": inc.incident_type.value,
+                "severity": inc.severity.value,
+                "source_ip": inc.source_ip,
+                "mitre_technique": inc.mitre_technique,
+                "description": inc.description[:100],
+            }
+            for inc in incidents
+        ],
+        "status": "detecting",
+    })
+
     # ---------------------------------------------------------------
     # Phase 5: PCI-DSS Compliance
     # ---------------------------------------------------------------
@@ -133,12 +187,31 @@ def run_simulation(
     print(f"      ✓ Compliance report generated in {comp_time:.2f}s")
     print(f"        Audit trail: {audit_path}")
 
-    # Generate individual incident reports
     for incident in incidents:
         ir = compliance.generate_incident_report(incident)
         ir_path = Path(output_dir) / f"IR-{incident.incident_id[:8]}.json"
         with open(ir_path, "w", encoding="utf-8") as f:
             json.dump(ir, f, indent=2, ensure_ascii=False)
+
+    # _write_progress HORS du with open
+    _write_progress(output_dir, 5, {
+        "total_events": len(raw_events),
+        "parsed_events": stats["parsed_count"],
+        "correlations": len(correlations),
+        "incidents": len(incidents),
+        "incident_list": [
+            {
+                "incident_type": inc.incident_type.value,
+                "severity": inc.severity.value,
+                "source_ip": inc.source_ip,
+                "mitre_technique": inc.mitre_technique,
+                "description": inc.description[:100],
+            }
+            for inc in incidents
+        ],
+        "severity_distribution": det_stats.get("by_severity", {}),
+        "status": "reporting",
+    })
 
     # ---------------------------------------------------------------
     # Phase 6: Dashboard & Reporting
@@ -157,7 +230,6 @@ def run_simulation(
 
     total_time = time.time() - start_time
 
-    # Summary
     results = {
         "total_events": len(raw_events),
         "parsed_events": stats["parsed_count"],
@@ -195,39 +267,19 @@ Examples:
         """,
     )
 
-    arg_parser.add_argument(
-        "--events", "-e",
-        type=int,
-        default=12000,
-        help="Number of events to generate per day (default: 12000)",
-    )
-    arg_parser.add_argument(
-        "--attack-prob", "-a",
-        type=float,
-        default=0.12,
-        help="Attack event probability 0.0-1.0 (default: 0.12)",
-    )
-    arg_parser.add_argument(
-        "--output", "-o",
-        type=str,
-        default="data",
-        help="Output directory for reports (default: data/)",
-    )
-    arg_parser.add_argument(
-        "--log-dir",
-        type=str,
-        default="logs",
-        help="Log directory (default: logs/)",
-    )
-    arg_parser.add_argument(
-        "--quiet", "-q",
-        action="store_true",
-        help="Suppress dashboard output",
-    )
+    arg_parser.add_argument("--events", "-e", type=int, default=12000,
+        help="Number of events to generate per day (default: 12000)")
+    arg_parser.add_argument("--attack-prob", "-a", type=float, default=0.12,
+        help="Attack event probability 0.0-1.0 (default: 0.12)")
+    arg_parser.add_argument("--output", "-o", type=str, default="data",
+        help="Output directory for reports (default: data/)")
+    arg_parser.add_argument("--log-dir", type=str, default="logs",
+        help="Log directory (default: logs/)")
+    arg_parser.add_argument("--quiet", "-q", action="store_true",
+        help="Suppress dashboard output")
 
     args = arg_parser.parse_args()
 
-    # Validate arguments with friendly error messages
     if args.events <= 0:
         arg_parser.error("--events must be a positive integer (got %d)" % args.events)
     if not 0.0 <= args.attack_prob <= 1.0:
